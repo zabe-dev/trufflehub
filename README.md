@@ -58,7 +58,7 @@ python trufflehub.py -org organization-name -include-forks -include-members
 **Save results to a directory:**
 
 ```bash
-python trufflehub.py -org organization-name -output ./results
+python trufflehub.py -org organization-name -output results/
 ```
 
 **Show only verified secrets:**

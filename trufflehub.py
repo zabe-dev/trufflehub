@@ -370,7 +370,7 @@ def main():
         scan_with_trufflehog(repo_url, idx, len(all_repos_list), args.output, only_verified)
 
     elapsed_time = time.time() - START_TIME
-    print(f"\n{Colors.CYAN}[INF]{Colors.RESET} Scan finished {Colors.DIM}({elapsed_time:.3f}s time elapsed){Colors.RESET}")
+    print(f"\n{Colors.CYAN}[INF]{Colors.RESET} Scan finished {Colors.DIM}({elapsed_time:.3f}s elapsed time){Colors.RESET}")
     cleanup()
 
 if __name__ == "__main__":
