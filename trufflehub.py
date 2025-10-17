@@ -352,7 +352,7 @@ def scan_with_trufflehog(repo_url: str, idx: int, total: int, output_dir: str = 
 
         padding = len(str(total))
         progress = f"{Colors.DIM}[{str(idx).zfill(padding)}/{total}]{Colors.RESET}"
-        count = f"[{count_color}{total_findings}{Colors.RESET} findings]"
+        count = f"[{count_color}{total_findings} results{Colors.RESET}]"
 
         if not SILENT_MODE or critical_count > 0 or medium_count > 0:
             print(f"{progress} {repo_type} {repo_full} {count}")
