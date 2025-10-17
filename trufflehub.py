@@ -11,7 +11,7 @@ import tempfile
 import termios
 import time
 import tty
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 import requests
 
@@ -24,16 +24,16 @@ OLD_TERM_SETTINGS = None
 
 class Colors:
     RED = '\033[91m'
-    GREEN = '\033[92m'
     YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    MAGENTA = '\033[95m'
     CYAN = '\033[96m'
-    WHITE = '\033[97m'
     RESET = '\033[0m'
     BOLD = '\033[1m'
     DIM = '\033[2m'
+    DIM_GREEN = '\033[2m\033[92m'
     ORANGE = '\033[38;5;208m'
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    GREEN = '\033[92m'
 
 IGNORED_PATTERNS = [
     r'example',
@@ -52,6 +52,8 @@ IGNORED_PATTERNS = [
     r'stub',
     r'dummy'
 ]
+
+REPO_METADATA_CACHE = {}
 
 def should_label_as_medium(finding_data: Dict) -> bool:
     try:
@@ -128,7 +130,57 @@ def run_command(cmd: List[str]) -> Dict:
     except subprocess.CalledProcessError as e:
         return {"success": False, "output": "", "error": e.stderr}
 
-def get_org_repos(org: str, include_forks: bool = True) -> List[str]:
+def get_repo_metadata(repo_url: str) -> Optional[Dict]:
+    if repo_url in REPO_METADATA_CACHE:
+        return REPO_METADATA_CACHE[repo_url]
+
+    try:
+        parts = repo_url.rstrip("/").replace(".git", "").split("/")
+        owner = parts[-2]
+        repo_name = parts[-1]
+
+        url = f"https://api.github.com/repos/{owner}/{repo_name}"
+        response = requests.get(url, headers=get_headers(), timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+            metadata = {
+                "fork": data.get("fork", False),
+                "private": data.get("private", False),
+                "archived": data.get("archived", False),
+                "disabled": data.get("disabled", False)
+            }
+            REPO_METADATA_CACHE[repo_url] = metadata
+            return metadata
+    except:
+        pass
+
+    return None
+
+def format_repo_type(metadata: Optional[Dict]) -> str:
+    """Format repository type badge with color"""
+    if metadata is None:
+        return f"{Colors.DIM}[unknown]{Colors.RESET}"
+
+    badges = []
+
+    if metadata.get("fork"):
+        badges.append(f"{Colors.YELLOW}fork{Colors.RESET}")
+    else:
+        badges.append(f"{Colors.GREEN}origin{Colors.RESET}")
+
+    if metadata.get("private"):
+        badges.append(f"{Colors.MAGENTA}private{Colors.RESET}")
+
+    if metadata.get("archived"):
+        badges.append(f"{Colors.BLUE}archived{Colors.RESET}")
+
+    if metadata.get("disabled"):
+        badges.append(f"{Colors.RED}disabled{Colors.RESET}")
+
+    return f"[{' '.join(badges)}]"
+
+def get_org_repos(org: str, include_forks: bool = True) -> List[Dict]:
     repos = []
     page = 1
 
@@ -150,7 +202,21 @@ def get_org_repos(org: str, include_forks: bool = True) -> List[str]:
 
         for repo in data:
             if include_forks or not repo.get("fork", False):
-                repos.append(repo["clone_url"])
+                repo_info = {
+                    "url": repo["clone_url"],
+                    "fork": repo.get("fork", False),
+                    "private": repo.get("private", False),
+                    "archived": repo.get("archived", False),
+                    "disabled": repo.get("disabled", False)
+                }
+                repos.append(repo_info)
+
+                REPO_METADATA_CACHE[repo["clone_url"]] = {
+                    "fork": repo_info["fork"],
+                    "private": repo_info["private"],
+                    "archived": repo_info["archived"],
+                    "disabled": repo_info["disabled"]
+                }
 
         page += 1
 
@@ -183,7 +249,7 @@ def get_org_members(org: str) -> List[str]:
 
     return list(set(members))
 
-def get_user_repos(username: str, include_forks: bool = True) -> List[str]:
+def get_user_repos(username: str, include_forks: bool = True) -> List[Dict]:
     repos = []
     page = 1
 
@@ -205,7 +271,21 @@ def get_user_repos(username: str, include_forks: bool = True) -> List[str]:
 
         for repo in data:
             if include_forks or not repo.get("fork", False):
-                repos.append(repo["clone_url"])
+                repo_info = {
+                    "url": repo["clone_url"],
+                    "fork": repo.get("fork", False),
+                    "private": repo.get("private", False),
+                    "archived": repo.get("archived", False),
+                    "disabled": repo.get("disabled", False)
+                }
+                repos.append(repo_info)
+
+                REPO_METADATA_CACHE[repo["clone_url"]] = {
+                    "fork": repo_info["fork"],
+                    "private": repo_info["private"],
+                    "archived": repo_info["archived"],
+                    "disabled": repo_info["disabled"]
+                }
 
         page += 1
 
@@ -218,6 +298,9 @@ def scan_with_trufflehog(repo_url: str, idx: int, total: int, output_dir: str = 
     repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
     org_or_user = repo_url.rstrip("/").split("/")[-2]
     repo_full = f"{org_or_user}/{repo_name}"
+
+    metadata = get_repo_metadata(repo_url)
+    repo_type = format_repo_type(metadata)
 
     cmd = ["trufflehog", "git", repo_url, "--json"]
 
@@ -261,25 +344,24 @@ def scan_with_trufflehog(repo_url: str, idx: int, total: int, output_dir: str = 
         total_findings = critical_count + medium_count
 
         if total_findings > 0 and has_any_medium:
-            status = f"{Colors.ORANGE}[medium]{Colors.RESET}"
             count_color = Colors.ORANGE
         elif total_findings > 0:
-            status = f"{Colors.RED}[critical]{Colors.RESET}"
             count_color = Colors.RED
         else:
-            status = f"{Colors.GREEN}[clean]{Colors.RESET}"
-            count_color = Colors.GREEN
+            count_color = Colors.DIM_GREEN
 
         padding = len(str(total))
         progress = f"{Colors.DIM}[{str(idx).zfill(padding)}/{total}]{Colors.RESET}"
-        count = f"{count_color}{total_findings}{Colors.RESET}"
+        count = f"[{count_color}{total_findings}{Colors.RESET} findings]"
 
         if not SILENT_MODE or critical_count > 0 or medium_count > 0:
-            print(f"{progress} {status} {repo_full} {Colors.DIM}[{count} findings]{Colors.RESET}")
+            print(f"{progress} {repo_type} {repo_full} {count}")
     else:
         padding = len(str(total))
         progress = f"{Colors.DIM}[{str(idx).zfill(padding)}/{total}]{Colors.RESET}"
-        print(f"{progress} {Colors.RED}[failed]{Colors.RESET} {repo_full}")
+        metadata = get_repo_metadata(repo_url)
+        repo_type = format_repo_type(metadata)
+        print(f"{progress} {repo_type} {Colors.RED}[failed]{Colors.RESET} {repo_full}")
 
 def main():
     global SILENT_MODE, START_TIME, OLD_TERM_SETTINGS
@@ -318,10 +400,10 @@ def main():
 
     only_verified = args.results == "valid"
 
-    all_repos: Set[str] = set()
+    all_repos: Dict[str, Dict] = {}
 
     if args.repo:
-        all_repos.add(args.repo)
+        all_repos[args.repo] = {"url": args.repo}
 
     if args.org:
         if not SILENT_MODE:
@@ -329,7 +411,8 @@ def main():
         org_repos = get_org_repos(args.org, args.include_forks)
         if not SILENT_MODE:
             print(f"{Colors.CYAN}[INF]{Colors.RESET} Found {Colors.BOLD}{len(org_repos)}{Colors.RESET} organization repositories")
-        all_repos.update(org_repos)
+        for repo_info in org_repos:
+            all_repos[repo_info["url"]] = repo_info
 
         if args.include_members:
             if not SILENT_MODE:
@@ -344,7 +427,8 @@ def main():
                 member_repos = get_user_repos(member, args.include_forks)
                 if member_repos and not SILENT_MODE:
                     print(f"{Colors.DIM}[*]{Colors.RESET} {member}: {len(member_repos)} repositories")
-                all_repos.update(member_repos)
+                for repo_info in member_repos:
+                    all_repos[repo_info["url"]] = repo_info
 
     if args.user:
         if not SILENT_MODE:
@@ -352,12 +436,13 @@ def main():
         user_repos = get_user_repos(args.user, args.include_forks)
         if not SILENT_MODE:
             print(f"{Colors.CYAN}[INF]{Colors.RESET} Found {Colors.BOLD}{len(user_repos)}{Colors.RESET} user repositories")
-        all_repos.update(user_repos)
+        for repo_info in user_repos:
+            all_repos[repo_info["url"]] = repo_info
 
     if INTERRUPTED:
         sys.exit(130)
 
-    all_repos_list = sorted(list(all_repos))
+    all_repos_list = sorted(list(all_repos.keys()))
 
     if not SILENT_MODE:
         print(f"{Colors.CYAN}[INF]{Colors.RESET} Starting scan of {Colors.BOLD}{len(all_repos_list)}{Colors.RESET} repositories")
