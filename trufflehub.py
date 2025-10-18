@@ -7,11 +7,9 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import termios
 import time
-import tty
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 import requests
 
@@ -29,7 +27,6 @@ class Colors:
     RESET = '\033[0m'
     BOLD = '\033[1m'
     DIM = '\033[2m'
-    DIM_GREEN = '\033[2m\033[92m'
     ORANGE = '\033[38;5;208m'
     BLUE = '\033[94m'
     MAGENTA = '\033[95m'
@@ -91,11 +88,11 @@ def cleanup():
 def signal_handler(signum, frame):
     global INTERRUPTED, START_TIME
     INTERRUPTED = True
-    print(f"{Colors.YELLOW}[WRN]{Colors.RESET} Scan interrupted by user")
-    print(f"{Colors.CYAN}[INF]{Colors.RESET} Cleaning up temporary files...")
+    print(f"[{Colors.YELLOW}WRN{Colors.RESET}] Scan interrupted by user")
+    print(f"[{Colors.YELLOW}WRN{Colors.RESET}] Cleaning up temporary files...")
     cleanup()
     elapsed_time = (time.time() - START_TIME) if START_TIME is not None else 0
-    print(f"{Colors.CYAN}[INF]{Colors.RESET} Scan finished {Colors.DIM}({elapsed_time:.3f}s time elapsed){Colors.RESET}")
+    print(f"\n[{Colors.CYAN}INF{Colors.RESET}] Scan finished {Colors.DIM}({elapsed_time:.3f}s time elapsed){Colors.RESET}")
     sys.exit(130)
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -157,28 +154,31 @@ def get_repo_metadata(repo_url: str) -> Optional[Dict]:
 
     return None
 
-def format_repo_type(metadata: Optional[Dict]) -> str:
-    """Format repository type badge with color"""
-    if metadata is None:
-        return f"{Colors.DIM}[unknown]{Colors.RESET}"
-
+def format_repo_type(metadata: Optional[Dict], failed: bool = False) -> str:
     badges = []
 
-    if metadata.get("fork"):
-        badges.append(f"{Colors.YELLOW}fork{Colors.RESET}")
-    else:
-        badges.append(f"{Colors.GREEN}origin{Colors.RESET}")
+    if failed:
+        badges.append(f"[{Colors.RED}failed{Colors.RESET}]")
+
+    if metadata is None:
+        badges.append(f"[{Colors.DIM}unknown{Colors.RESET}]")
+        return " ".join(badges)
 
     if metadata.get("private"):
-        badges.append(f"{Colors.MAGENTA}private{Colors.RESET}")
+        badges.append(f"[{Colors.MAGENTA}private{Colors.RESET}]")
+
+    if metadata.get("fork"):
+        badges.append(f"[{Colors.YELLOW}fork{Colors.RESET}]")
+    else:
+        badges.append(f"[{Colors.GREEN}origin{Colors.RESET}]")
 
     if metadata.get("archived"):
-        badges.append(f"{Colors.BLUE}archived{Colors.RESET}")
+        badges.append(f"[{Colors.BLUE}archived{Colors.RESET}]")
 
     if metadata.get("disabled"):
-        badges.append(f"{Colors.RED}disabled{Colors.RESET}")
+        badges.append(f"[{Colors.RED}disabled{Colors.RESET}]")
 
-    return f"[{' '.join(badges)}]"
+    return " ".join(badges)
 
 def get_org_repos(org: str, include_forks: bool = True) -> List[Dict]:
     repos = []
@@ -193,7 +193,7 @@ def get_org_repos(org: str, include_forks: bool = True) -> List[Dict]:
 
         if response.status_code != 200:
             if not SILENT_MODE:
-                print(f"{Colors.RED}[ERR]{Colors.RESET} Failed to fetch org repos: {response.status_code}")
+                print(f"[{Colors.RED}ERR{Colors.RESET}] Failed to fetch org repos: {response.status_code}")
             break
 
         data = response.json()
@@ -235,7 +235,7 @@ def get_org_members(org: str) -> List[str]:
 
         if response.status_code != 200:
             if not SILENT_MODE:
-                print(f"{Colors.RED}[ERR]{Colors.RESET} Failed to fetch org members: {response.status_code}")
+                print(f"[{Colors.RED}ERR{Colors.RESET}] Failed to fetch org members: {response.status_code}")
             break
 
         data = response.json()
@@ -262,7 +262,7 @@ def get_user_repos(username: str, include_forks: bool = True) -> List[Dict]:
 
         if response.status_code != 200:
             if not SILENT_MODE:
-                print(f"{Colors.RED}[ERR]{Colors.RESET} Failed to fetch repos for {username}: {response.status_code}")
+                print(f"[{Colors.RED}ERR{Colors.RESET}] Failed to fetch repos for {username}: {response.status_code}")
             break
 
         data = response.json()
@@ -300,7 +300,6 @@ def scan_with_trufflehog(repo_url: str, idx: int, total: int, output_dir: str = 
     repo_full = f"{org_or_user}/{repo_name}"
 
     metadata = get_repo_metadata(repo_url)
-    repo_type = format_repo_type(metadata)
 
     cmd = ["trufflehog", "git", repo_url, "--json"]
 
@@ -308,6 +307,9 @@ def scan_with_trufflehog(repo_url: str, idx: int, total: int, output_dir: str = 
         cmd.append("--only-verified")
 
     result = run_command(cmd)
+
+    padding = len(str(total))
+    progress = f"{Colors.DIM}[{str(idx).zfill(padding)}/{total}]{Colors.RESET}"
 
     if result["success"]:
         critical_findings = []
@@ -343,25 +345,22 @@ def scan_with_trufflehog(repo_url: str, idx: int, total: int, output_dir: str = 
         medium_count = len(medium_findings)
         total_findings = critical_count + medium_count
 
-        if total_findings > 0 and has_any_medium:
-            count_color = Colors.ORANGE
-        elif total_findings > 0:
-            count_color = Colors.RED
+        repo_type = format_repo_type(metadata, failed=False)
+
+        if total_findings > 0:
+            if has_any_medium:
+                count_color = Colors.ORANGE
+            else:
+                count_color = Colors.RED
+            count = f"[{count_color}{total_findings} findings{Colors.RESET}]"
+            if not SILENT_MODE or critical_count > 0 or medium_count > 0:
+                print(f"{progress} {repo_type} {repo_full} {count}")
         else:
-            count_color = Colors.DIM_GREEN
-
-        padding = len(str(total))
-        progress = f"{Colors.DIM}[{str(idx).zfill(padding)}/{total}]{Colors.RESET}"
-        count = f"[{count_color}{total_findings} results{Colors.RESET}]"
-
-        if not SILENT_MODE or critical_count > 0 or medium_count > 0:
-            print(f"{progress} {repo_type} {repo_full} {count}")
+            if not SILENT_MODE:
+                print(f"{progress} {repo_type} {repo_full}")
     else:
-        padding = len(str(total))
-        progress = f"{Colors.DIM}[{str(idx).zfill(padding)}/{total}]{Colors.RESET}"
-        metadata = get_repo_metadata(repo_url)
-        repo_type = format_repo_type(metadata)
-        print(f"{progress} {repo_type} {Colors.RED}[failed]{Colors.RESET} {repo_full}")
+        repo_type = format_repo_type(metadata, failed=True)
+        print(f"{progress} {repo_type} {repo_full}")
 
 def main():
     global SILENT_MODE, START_TIME, OLD_TERM_SETTINGS
@@ -390,13 +389,13 @@ def main():
 
     if not args.org and not args.repo and not args.user:
         if not SILENT_MODE:
-            print(f"{Colors.RED}[ERR]{Colors.RESET} Must specify -org, -user, or -repo")
+            print(f"[{Colors.RED}ERR{Colors.RESET}] Must specify -org, -user, or -repo")
         sys.exit(1)
 
     print_banner()
 
     if not GITHUB_TOKEN and not SILENT_MODE:
-        print(f"{Colors.YELLOW}[WRN]{Colors.RESET} GITHUB_TOKEN not set, rate limits may apply")
+        print(f"[{Colors.YELLOW}WRN{Colors.RESET}] GITHUB_TOKEN not set, rate limits may apply")
 
     only_verified = args.results == "valid"
 
@@ -407,19 +406,19 @@ def main():
 
     if args.org:
         if not SILENT_MODE:
-            print(f"{Colors.CYAN}[INF]{Colors.RESET} Target organization: {Colors.BOLD}{args.org}{Colors.RESET}")
+            print(f"[{Colors.CYAN}INF{Colors.RESET}] Target organization: {Colors.BOLD}{args.org}{Colors.RESET}")
         org_repos = get_org_repos(args.org, args.include_forks)
         if not SILENT_MODE:
-            print(f"{Colors.CYAN}[INF]{Colors.RESET} Found {Colors.BOLD}{len(org_repos)}{Colors.RESET} organization repositories")
+            print(f"[{Colors.CYAN}INF{Colors.RESET}] Found {Colors.BOLD}{len(org_repos)}{Colors.RESET} organization repositories")
         for repo_info in org_repos:
             all_repos[repo_info["url"]] = repo_info
 
         if args.include_members:
             if not SILENT_MODE:
-                print(f"{Colors.CYAN}[INF]{Colors.RESET} Fetching organization members")
+                print(f"[{Colors.CYAN}INF{Colors.RESET}] Fetching organization members")
             members = get_org_members(args.org)
             if not SILENT_MODE:
-                print(f"{Colors.CYAN}[INF]{Colors.RESET} Found {Colors.BOLD}{len(members)}{Colors.RESET} organization members")
+                print(f"[{Colors.CYAN}INF{Colors.RESET}] Found {Colors.BOLD}{len(members)}{Colors.RESET} organization members")
 
             for member in members:
                 if INTERRUPTED:
@@ -432,10 +431,10 @@ def main():
 
     if args.user:
         if not SILENT_MODE:
-            print(f"{Colors.CYAN}[INF]{Colors.RESET} Target user: {Colors.BOLD}{args.user}{Colors.RESET}")
+            print(f"[{Colors.CYAN}INF{Colors.RESET}] Target user: {Colors.BOLD}{args.user}{Colors.RESET}")
         user_repos = get_user_repos(args.user, args.include_forks)
         if not SILENT_MODE:
-            print(f"{Colors.CYAN}[INF]{Colors.RESET} Found {Colors.BOLD}{len(user_repos)}{Colors.RESET} user repositories")
+            print(f"[{Colors.CYAN}INF{Colors.RESET}] Found {Colors.BOLD}{len(user_repos)}{Colors.RESET} user repositories")
         for repo_info in user_repos:
             all_repos[repo_info["url"]] = repo_info
 
@@ -445,7 +444,7 @@ def main():
     all_repos_list = sorted(list(all_repos.keys()))
 
     if not SILENT_MODE:
-        print(f"{Colors.CYAN}[INF]{Colors.RESET} Starting scan of {Colors.BOLD}{len(all_repos_list)}{Colors.RESET} repositories")
+        print(f"[{Colors.CYAN}INF{Colors.RESET}] Starting scan of {Colors.BOLD}{len(all_repos_list)}{Colors.RESET} repositories")
 
     START_TIME = time.time()
 
@@ -455,7 +454,7 @@ def main():
         scan_with_trufflehog(repo_url, idx, len(all_repos_list), args.output, only_verified)
 
     elapsed_time = time.time() - START_TIME
-    print(f"\n{Colors.CYAN}[INF]{Colors.RESET} Scan finished {Colors.DIM}({elapsed_time:.3f}s elapsed time){Colors.RESET}")
+    print(f"\n[{Colors.CYAN}INF{Colors.RESET}] Scan finished {Colors.DIM}({elapsed_time:.3f}s elapsed time){Colors.RESET}")
     cleanup()
 
 if __name__ == "__main__":
